@@ -1,0 +1,21 @@
+<Page xmlns="http://schemas.nativescript.org/tns.xsd" navigatingTo="onNavigatingTo">
+  <ActionBar title="Script Runner" />
+  <ScrollView>
+    <StackLayout padding="20" spacing="14">
+      <Label text="NativeScript / napi-ios Script Runner" fontSize="22" fontWeight="bold" textWrap="true" />
+      <Label text="Import a local .js/.mjs/.txt file, inspect it, then run it explicitly." textWrap="true" />
+      <Label text="Warning: imported code executes with the native capabilities exposed by the runtime. Only run code you trust." textWrap="true" color="#9b1c1c" />
+
+      <Button text="Import Script" tap="onImport" />
+      <Label text="{{ fileName }}" fontWeight="bold" textWrap="true" />
+
+      <TextView text="{{ source }}" editable="false" height="300" hint="No script loaded" />
+
+      <Button text="Run Script" tap="onRun" isEnabled="{{ canRun }}" />
+      <Button text="Clear Console" tap="onClearConsole" />
+
+      <Label text="Console" fontSize="18" fontWeight="bold" />
+      <TextView text="{{ output }}" editable="false" height="240" />
+    </StackLayout>
+  </ScrollView>
+</Page>

@@ -1,0 +1,21 @@
+{
+  "name": "napi-script-runner",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Minimal iOS script runner using a locally built NativeScript iOS runtime from NativeScript/napi-ios.",
+  "main": "app/app.ts",
+  "scripts": {
+    "clean": "ns clean",
+    "build:ios": "ns build ios",
+    "prepare:ios": "ns prepare ios"
+  },
+  "dependencies": {
+    "@nativescript/core": "9.0.20"
+  },
+  "devDependencies": {
+    "@nativescript/types": "~9.0.0",
+    "@nativescript/webpack": "~5.0.27",
+    "nativescript": "9.0.7",
+    "typescript": "~5.9.2"
+  }
+}
