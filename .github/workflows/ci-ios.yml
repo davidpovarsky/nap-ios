@@ -1,4 +1,4 @@
-name: iOS CI - runtime, simulator, IPA
+name: iOS Build & Test
 
 on:
   workflow_dispatch:
@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: ios-ci-${{ github.ref }}
@@ -32,6 +33,7 @@ jobs:
           {
             xcodebuild -version
             sw_vers
+            uname -m
             xcrun simctl list runtimes
             xcrun simctl list devices available
           } 2>&1 | tee artifacts/xcode-diagnostics.log
@@ -173,6 +175,14 @@ jobs:
           echo "$APP" | tee artifacts/simulator-app-location.log
           ditto -c -k --sequesterRsrc --keepParent "$APP" artifacts/NapiScriptRunner-simulator.zip
 
+      - name: Upload simulator app for Live Preview
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-simulator-app-${{ github.sha }}
+          path: artifacts/NapiScriptRunner-simulator.zip
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Boot simulator, install and launch app
         id: simrun
         shell: bash
@@ -205,6 +215,20 @@ jobs:
           sleep 8
           xcrun simctl io "$UDID" screenshot artifacts/simulator.png 2>&1 | tee -a artifacts/simulator-run.log
           xcrun simctl spawn "$UDID" log show --style compact --last 5m --predicate 'processImagePath CONTAINS "NapiScriptRunner" OR process == "NapiScriptRunner"' > artifacts/simulator-system.log 2>&1 || true
+
+      - name: SimDeck UI verification and diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install -g simdeck@latest 2>&1 | tee artifacts/simdeck-install.log
+          simdeck --version 2>&1 | tee artifacts/simdeck-version.log
+          simdeck use "${{ steps.simrun.outputs.udid }}" 2>&1 | tee artifacts/simdeck-use.log
+          simdeck describe --format agent --max-depth 5 --interactive 2>&1 | tee artifacts/simdeck-ui.txt
+          simdeck screenshot --output artifacts/simdeck-screenshot.png 2>&1 | tee artifacts/simdeck-screenshot.log
+          simdeck record --seconds 5 --output artifacts/simdeck-recording.mp4 2>&1 | tee artifacts/simdeck-recording.log || true
+          simdeck logs --seconds 60 --limit 300 > artifacts/simdeck-logs.json 2> artifacts/simdeck-logs.stderr.log || true
+          grep -F "Import Script" artifacts/simdeck-ui.txt >/dev/null
+          grep -F "Run Script" artifacts/simdeck-ui.txt >/dev/null
 
       - name: Build unsigned device app
         shell: bash

@@ -1,0 +1,246 @@
+name: Live SimDeck Preview
+
+on:
+  workflow_dispatch:
+    inputs:
+      keepalive_seconds:
+        description: How long to keep the browser simulator session alive
+        required: true
+        default: "900"
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: live-simdeck-preview
+  cancel-in-progress: true
+
+jobs:
+  preview:
+    runs-on: macos-15
+    timeout-minutes: 35
+
+    steps:
+      - name: Select Xcode
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          xcodebuild -version
+          uname -m
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install SimDeck and cloudflared
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install -g simdeck@latest
+          simdeck --version
+
+          case "$(uname -m)" in
+            arm64) ARCH=arm64 ;;
+            x86_64) ARCH=amd64 ;;
+            *) echo "Unsupported macOS architecture: $(uname -m)" >&2; exit 1 ;;
+          esac
+
+          mkdir -p "$RUNNER_TEMP/cloudflared"
+          curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-${ARCH}.tgz" \
+            | tar -xz -C "$RUNNER_TEMP/cloudflared"
+          chmod +x "$RUNNER_TEMP/cloudflared/cloudflared"
+          echo "$RUNNER_TEMP/cloudflared" >> "$GITHUB_PATH"
+
+      - name: Download latest successful simulator build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p downloaded-app preview-artifacts
+
+          RUN_ID=$(gh api \
+            -H "Accept: application/vnd.github+json" \
+            "repos/${REPO}/actions/workflows/ci-ios.yml/runs?branch=main&status=success&per_page=20" \
+            --jq '.workflow_runs[0].id')
+
+          if [ -z "$RUN_ID" ] || [ "$RUN_ID" = "null" ]; then
+            echo "No successful iOS Build & Test run found on main." >&2
+            exit 1
+          fi
+
+          ARTIFACT_NAME=$(gh api \
+            -H "Accept: application/vnd.github+json" \
+            "repos/${REPO}/actions/runs/${RUN_ID}/artifacts?per_page=100" \
+            --jq '[.artifacts[] | select(.expired == false and (.name | startswith("ios-simulator-app-")))][0].name')
+
+          if [ -z "$ARTIFACT_NAME" ] || [ "$ARTIFACT_NAME" = "null" ]; then
+            echo "The latest successful build does not contain an ios-simulator-app-* artifact." >&2
+            exit 1
+          fi
+
+          echo "Using build run ${RUN_ID}, artifact ${ARTIFACT_NAME}" | tee preview-artifacts/source-build.txt
+          gh run download "$RUN_ID" --repo "$REPO" --name "$ARTIFACT_NAME" --dir downloaded-app
+
+          ZIP=$(find downloaded-app -type f -name '*.zip' -print -quit)
+          if [ -z "$ZIP" ]; then
+            echo "Simulator artifact ZIP not found." >&2
+            find downloaded-app -maxdepth 3 -print >&2
+            exit 1
+          fi
+
+          mkdir -p unpacked-app
+          ditto -x -k "$ZIP" unpacked-app
+          APP=$(find unpacked-app -type d -name '*.app' -print -quit)
+          if [ -z "$APP" ]; then
+            echo "Downloaded artifact did not contain an .app bundle." >&2
+            find unpacked-app -maxdepth 4 -print >&2
+            exit 1
+          fi
+
+          echo "APP_PATH=$APP" >> "$GITHUB_ENV"
+
+      - name: Select and boot newest iPhone simulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          UDID=$(python3 - <<'PY'
+          import json, re, subprocess
+          data = json.loads(subprocess.check_output(['xcrun','simctl','list','devices','available','-j']))
+          choices=[]
+          for runtime, devices in data.get('devices',{}).items():
+              if 'iOS' not in runtime:
+                  continue
+              version=tuple(int(x) for x in re.findall(r'\d+', runtime)[:3]) or (0,)
+              for index, d in enumerate(devices):
+                  if d.get('isAvailable') and d.get('name','').startswith('iPhone'):
+                      choices.append((version, -index, d['udid'], d['name']))
+          if not choices:
+              raise SystemExit('No available iPhone simulator')
+          choices.sort(reverse=True)
+          print(choices[0][2])
+          PY
+          )
+
+          echo "SIMULATOR_UDID=$UDID" >> "$GITHUB_ENV"
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b
+
+      - name: Start SimDeck browser service and public tunnel
+        id: stream
+        shell: bash
+        run: |
+          set -euo pipefail
+          PORT=4311
+          TOKEN=$(openssl rand -hex 32)
+          META="$RUNNER_TEMP/simdeck-service.json"
+
+          simdeck service stop || true
+          SIMDECK_VIDEO_CODEC=software \
+          SIMDECK_ALLOWED_ORIGINS='*' \
+          SIMDECK_REALTIME_STREAM=1 \
+          simdeck service run \
+            --metadata-path "$META" \
+            --port "$PORT" \
+            --bind 127.0.0.1 \
+            --video-codec software \
+            --stream-quality tiny \
+            --local-stream-fps 24 \
+            --access-token "$TOKEN" \
+            --pairing-code 000000 \
+            > preview-artifacts/simdeck-service.log 2>&1 &
+          echo $! > "$RUNNER_TEMP/simdeck.pid"
+
+          cloudflared tunnel \
+            --url "http://127.0.0.1:${PORT}" \
+            --protocol http2 \
+            --no-autoupdate \
+            > preview-artifacts/cloudflared.log 2>&1 &
+          echo $! > "$RUNNER_TEMP/cloudflared.pid"
+
+          for attempt in {1..120}; do
+            if curl -fsS "http://127.0.0.1:${PORT}/api/health?simdeckToken=${TOKEN}" >/dev/null; then
+              break
+            fi
+            if ! kill -0 "$(cat "$RUNNER_TEMP/simdeck.pid")" 2>/dev/null; then
+              cat preview-artifacts/simdeck-service.log >&2
+              exit 1
+            fi
+            sleep 0.25
+          done
+
+          TUNNEL_URL=""
+          for attempt in {1..120}; do
+            TUNNEL_URL=$(grep -Eo 'https://[-a-zA-Z0-9.]+\.trycloudflare\.com' preview-artifacts/cloudflared.log | head -1 || true)
+            [ -n "$TUNNEL_URL" ] && break
+            sleep 0.25
+          done
+
+          if [ -z "$TUNNEL_URL" ]; then
+            cat preview-artifacts/cloudflared.log >&2
+            exit 1
+          fi
+
+          PUBLIC_URL="${TUNNEL_URL}?simdeckToken=${TOKEN}&device=${SIMULATOR_UDID}"
+          echo "public_url=$PUBLIC_URL" >> "$GITHUB_OUTPUT"
+          echo "$PUBLIC_URL" > preview-artifacts/public-url.txt
+
+          {
+            echo "## Live SimDeck Preview"
+            echo
+            echo "Open this on your iPad while this workflow is running:"
+            echo
+            echo "### [Open the live iPhone Simulator](${PUBLIC_URL})"
+            echo
+            echo "Session length: ${{ inputs.keepalive_seconds }} seconds."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Install and launch app
+        shell: bash
+        run: |
+          set -euo pipefail
+          simdeck use "$SIMULATOR_UDID"
+          simdeck install "$APP_PATH" | tee preview-artifacts/simdeck-install-app.log
+          simdeck launch com.davidpovarsky.napiscriptrunner | tee preview-artifacts/simdeck-launch.log
+          sleep 5
+          simdeck describe --format agent --max-depth 5 --interactive > preview-artifacts/ui-tree.txt
+          simdeck screenshot --output preview-artifacts/preview-screenshot.png
+
+      - name: Keep live iPad session open
+        shell: bash
+        run: |
+          set -euo pipefail
+          END=$((SECONDS + ${{ inputs.keepalive_seconds }}))
+          while (( SECONDS < END )); do
+            if ! kill -0 "$(cat "$RUNNER_TEMP/simdeck.pid")" 2>/dev/null; then
+              echo "SimDeck service stopped unexpectedly." >&2
+              exit 1
+            fi
+            if ! kill -0 "$(cat "$RUNNER_TEMP/cloudflared.pid")" 2>/dev/null; then
+              echo "Cloudflare tunnel stopped unexpectedly." >&2
+              exit 1
+            fi
+            sleep 5
+          done
+
+      - name: Collect final preview logs
+        if: always()
+        shell: bash
+        run: |
+          simdeck logs --seconds 300 --limit 500 > preview-artifacts/simdeck-logs.json 2> preview-artifacts/simdeck-logs.stderr.log || true
+          xcrun simctl spawn "${SIMULATOR_UDID:-booted}" log show --style compact --last 10m \
+            --predicate 'processImagePath CONTAINS "NapiScriptRunner" OR process == "NapiScriptRunner"' \
+            > preview-artifacts/simulator-system.log 2>&1 || true
+
+      - name: Upload preview diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: simdeck-preview-${{ github.run_number }}
+          path: preview-artifacts/
+          if-no-files-found: warn
+          retention-days: 7
