@@ -130,6 +130,37 @@ jobs:
           xcrun simctl boot "$UDID" || true
           xcrun simctl bootstatus "$UDID" -b
 
+      - name: Install and launch app directly with simctl
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUNDLE_ID=com.davidpovarsky.napiscriptrunner
+
+          xcrun simctl install "$SIMULATOR_UDID" "$APP_PATH" 2>&1 | tee preview-artifacts/simctl-install.log
+          xcrun simctl terminate "$SIMULATOR_UDID" "$BUNDLE_ID" >/dev/null 2>&1 || true
+
+          python3 - "$SIMULATOR_UDID" "$BUNDLE_ID" <<'PY' | tee preview-artifacts/simctl-launch.log
+          import subprocess, sys
+          udid, bundle = sys.argv[1], sys.argv[2]
+          cmd = ['xcrun', 'simctl', 'launch', '--terminate-running-process', udid, bundle]
+          try:
+              result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                      text=True, timeout=30)
+          except subprocess.TimeoutExpired as exc:
+              if exc.stdout:
+                  print(exc.stdout)
+              print('simctl launch timed out after 30 seconds', file=sys.stderr)
+              raise SystemExit(124)
+          print(result.stdout, end='')
+          raise SystemExit(result.returncode)
+          PY
+
+          sleep 5
+          xcrun simctl io "$SIMULATOR_UDID" screenshot preview-artifacts/pre-stream-screenshot.png
+          xcrun simctl spawn "$SIMULATOR_UDID" log show --style compact --last 3m \
+            --predicate 'processImagePath CONTAINS "NapiScriptRunner" OR process == "NapiScriptRunner"' \
+            > preview-artifacts/pre-stream-system.log 2>&1 || true
+
       - name: Start SimDeck service and public tunnel
         id: stream
         shell: bash
@@ -139,21 +170,42 @@ jobs:
           TOKEN=$(openssl rand -hex 32)
           META="$RUNNER_TEMP/simdeck-service.json"
 
-          simdeck service stop || true
-          SIMDECK_VIDEO_CODEC=software \
-          SIMDECK_ALLOWED_ORIGINS='*' \
-          SIMDECK_REALTIME_STREAM=1 \
-          simdeck service run \
-            --metadata-path "$META" \
-            --port "$PORT" \
-            --bind 127.0.0.1 \
-            --video-codec software \
-            --stream-quality tiny \
-            --local-stream-fps 24 \
-            --access-token "$TOKEN" \
-            --pairing-code 000000 \
-            > preview-artifacts/simdeck-service.log 2>&1 &
+          simdeck service kill || true
+          nohup env \
+            SIMDECK_VIDEO_CODEC=software \
+            SIMDECK_ALLOWED_ORIGINS='*' \
+            SIMDECK_REALTIME_STREAM=1 \
+            simdeck service run \
+              --metadata-path "$META" \
+              --port "$PORT" \
+              --bind 127.0.0.1 \
+              --video-codec software \
+              --stream-quality tiny \
+              --local-stream-fps 24 \
+              --access-token "$TOKEN" \
+              --pairing-code 000000 \
+              > preview-artifacts/simdeck-service.log 2>&1 &
           echo $! > "$RUNNER_TEMP/simdeck.pid"
+
+          READY=false
+          for attempt in {1..120}; do
+            if curl -fsS "http://127.0.0.1:${PORT}/api/health?simdeckToken=${TOKEN}" > preview-artifacts/simdeck-health.json 2>/dev/null; then
+              READY=true
+              break
+            fi
+            if ! kill -0 "$(cat "$RUNNER_TEMP/simdeck.pid")" 2>/dev/null; then
+              echo "SimDeck service exited before becoming healthy." >&2
+              cat preview-artifacts/simdeck-service.log >&2 || true
+              exit 1
+            fi
+            sleep 0.25
+          done
+
+          if [ "$READY" != true ]; then
+            echo "SimDeck service never became healthy on port ${PORT}." >&2
+            cat preview-artifacts/simdeck-service.log >&2 || true
+            exit 1
+          fi
 
           cloudflared tunnel \
             --url "http://127.0.0.1:${PORT}" \
@@ -162,21 +214,14 @@ jobs:
             > preview-artifacts/cloudflared.log 2>&1 &
           echo $! > "$RUNNER_TEMP/cloudflared.pid"
 
-          for attempt in {1..120}; do
-            if curl -fsS "http://127.0.0.1:${PORT}/api/health?simdeckToken=${TOKEN}" >/dev/null; then
-              break
-            fi
-            if ! kill -0 "$(cat "$RUNNER_TEMP/simdeck.pid")" 2>/dev/null; then
-              cat preview-artifacts/simdeck-service.log >&2
-              exit 1
-            fi
-            sleep 0.25
-          done
-
           TUNNEL_URL=""
           for attempt in {1..120}; do
             TUNNEL_URL=$(grep -Eo 'https://[-a-zA-Z0-9.]+\.trycloudflare\.com' preview-artifacts/cloudflared.log | head -1 || true)
             [ -n "$TUNNEL_URL" ] && break
+            if ! kill -0 "$(cat "$RUNNER_TEMP/cloudflared.pid")" 2>/dev/null; then
+              cat preview-artifacts/cloudflared.log >&2 || true
+              exit 1
+            fi
             sleep 0.25
           done
 
@@ -212,16 +257,15 @@ jobs:
             echo "Session length: ${{ inputs.keepalive_seconds }} seconds."
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Install and launch app
+      - name: Verify running app through SimDeck
         shell: bash
         run: |
           set -euo pipefail
-          simdeck use "$SIMULATOR_UDID"
-          simdeck install "$APP_PATH" | tee preview-artifacts/simdeck-install-app.log
-          simdeck launch com.davidpovarsky.napiscriptrunner | tee preview-artifacts/simdeck-launch.log
-          sleep 5
-          simdeck describe --format agent --max-depth 5 --interactive > preview-artifacts/ui-tree.txt
+          simdeck use "$SIMULATOR_UDID" | tee preview-artifacts/simdeck-use.log
+          simdeck describe --format agent --max-depth 5 --interactive | tee preview-artifacts/ui-tree.txt
           simdeck screenshot --output preview-artifacts/preview-screenshot.png
+          grep -F "Import Script" preview-artifacts/ui-tree.txt >/dev/null
+          grep -F "Run Script" preview-artifacts/ui-tree.txt >/dev/null
 
       - name: Keep live iPad session open
         shell: bash
@@ -229,9 +273,11 @@ jobs:
           set -euo pipefail
           END=$((SECONDS + ${{ inputs.keepalive_seconds }}))
           while (( SECONDS < END )); do
-            if ! kill -0 "$(cat "$RUNNER_TEMP/simdeck.pid")" 2>/dev/null; then
-              echo "SimDeck service stopped unexpectedly." >&2
-              exit 1
+            if ! curl -fsS "${{ steps.stream.outputs.browser_url }}" >/dev/null 2>&1; then
+              if ! kill -0 "$(cat "$RUNNER_TEMP/simdeck.pid")" 2>/dev/null; then
+                echo "SimDeck service stopped unexpectedly." >&2
+                exit 1
+              fi
             fi
             if ! kill -0 "$(cat "$RUNNER_TEMP/cloudflared.pid")" 2>/dev/null; then
               echo "Cloudflare tunnel stopped unexpectedly." >&2
@@ -248,6 +294,7 @@ jobs:
           xcrun simctl spawn "${SIMULATOR_UDID:-booted}" log show --style compact --last 10m \
             --predicate 'processImagePath CONTAINS "NapiScriptRunner" OR process == "NapiScriptRunner"' \
             > preview-artifacts/simulator-system.log 2>&1 || true
+          xcrun simctl io "${SIMULATOR_UDID:-booted}" screenshot preview-artifacts/final-screenshot.png >/dev/null 2>&1 || true
 
       - name: Upload preview diagnostics
         if: always()
