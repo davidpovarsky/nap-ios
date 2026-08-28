@@ -31,7 +31,8 @@ class RunnerViewModel extends Observable {
 }
 
 const vm = new RunnerViewModel();
-let pickerDelegate: DocumentPickerDelegate | null = null;
+// Keep a strong reference while the document picker is presented.
+let pickerDelegate: DocumentPickerDelegate | undefined;
 
 export function onNavigatingTo(args: EventData) {
   (args.object as Page).bindingContext = vm;
@@ -44,14 +45,18 @@ export function onImport() {
     return;
   }
 
-  const types = NSArray.arrayWithObjects('public.javascript', 'public.plain-text', 'public.data');
+  const types = NSArray.arrayWithArray([
+    'public.javascript',
+    'public.plain-text',
+    'public.data',
+  ]);
   const picker = UIDocumentPickerViewController.alloc().initWithDocumentTypesInMode(
     types,
     UIDocumentPickerMode.Import
   );
 
-  pickerDelegate = DocumentPickerDelegate.new();
-  pickerDelegate.onPicked = (url: NSURL) => {
+  const delegate = DocumentPickerDelegate.alloc().init() as DocumentPickerDelegate;
+  delegate.onPicked = (url: NSURL) => {
     try {
       const didAccess = url.startAccessingSecurityScopedResource();
       try {
@@ -68,8 +73,10 @@ export function onImport() {
       vm.append(`Import error: ${formatError(error)}`);
     }
   };
-  picker.delegate = pickerDelegate;
-  controller.presentViewControllerAnimatedCompletion(picker, true, null);
+
+  pickerDelegate = delegate;
+  picker.delegate = delegate;
+  controller.presentViewControllerAnimatedCompletion(picker, true, () => {});
 }
 
 export async function onRun() {
@@ -89,9 +96,9 @@ export async function onRun() {
   try {
     globalThis.console = bridgedConsole;
 
-    // Indirect eval executes in the runtime's global scope. In NativeScript that scope
-    // contains the Objective-C metadata bindings (UIKit/Foundation/etc.).
-    const globalEval = (0, eval);
+    // Calling eval through an alias performs an indirect/global eval. NativeScript's
+    // global scope contains the Objective-C metadata bindings exposed by the runtime.
+    const globalEval: (source: string) => unknown = eval;
     const result = globalEval(vm.source + `\n//# sourceURL=${vm.fileName.replace(/\s/g, '_')}`);
 
     if (result instanceof Promise) {
@@ -119,6 +126,14 @@ class DocumentPickerDelegate extends NSObject implements UIDocumentPickerDelegat
 
   documentPickerDidPickDocumentAtURL(_controller: UIDocumentPickerViewController, url: NSURL) {
     this.onPicked?.(url);
+  }
+
+  documentPickerDidPickDocumentsAtURLs(
+    _controller: UIDocumentPickerViewController,
+    urls: NSArray<NSURL>
+  ) {
+    const url = urls.firstObject;
+    if (url) this.onPicked?.(url);
   }
 
   documentPickerWasCancelled(_controller: UIDocumentPickerViewController) {

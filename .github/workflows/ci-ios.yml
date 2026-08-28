@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ios-ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-and-test:
     runs-on: macos-15
@@ -23,7 +27,7 @@ jobs:
       - name: Xcode diagnostics
         shell: bash
         run: |
-          set -o pipefail
+          set -euo pipefail
           sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
           {
             xcodebuild -version
@@ -36,18 +40,25 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
 
       - name: Install app dependencies
         shell: bash
         run: |
-          set -o pipefail
-          npm install 2>&1 | tee artifacts/npm-install-app.log
+          set -euo pipefail
+          npm ci 2>&1 | tee artifacts/npm-install-app.log
           npx ns --version 2>&1 | tee artifacts/nativescript-version.log
+
+      - name: TypeScript preflight
+        shell: bash
+        run: |
+          set -o pipefail
+          npx tsc --noEmit 2>&1 | tee artifacts/typescript-preflight.log
 
       - name: Clone current NativeScript napi-ios runtime
         shell: bash
         run: |
-          set -o pipefail
+          set -euo pipefail
           git clone --depth 1 --recurse-submodules https://github.com/NativeScript/napi-ios.git "$RUNNER_TEMP/napi-ios" 2>&1 | tee artifacts/clone-napi-ios.log
           git -C "$RUNNER_TEMP/napi-ios" rev-parse HEAD | tee artifacts/napi-ios-revision.txt
 
@@ -55,8 +66,8 @@ jobs:
         working-directory: ${{ runner.temp }}/napi-ios
         shell: bash
         run: |
-          set -o pipefail
-          npm install 2>&1 | tee "$GITHUB_WORKSPACE/artifacts/npm-install-runtime.log"
+          set -euo pipefail
+          npm ci 2>&1 | tee "$GITHUB_WORKSPACE/artifacts/npm-install-runtime.log"
           npm run build-ios 2>&1 | tee "$GITHUB_WORKSPACE/artifacts/build-runtime.log"
 
       - name: Locate runtime package
@@ -64,41 +75,99 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          TGZ=$(find "$RUNNER_TEMP/napi-ios" -type f -path '*/dist/*.tgz' | head -1 || true)
+          TGZ=$(find "$RUNNER_TEMP/napi-ios" -type f -path '*/dist/*.tgz' -print -quit)
           if [ -z "$TGZ" ]; then
             echo "No runtime .tgz found." | tee artifacts/runtime-package.log
-            find "$RUNNER_TEMP/napi-ios" -maxdepth 6 -type f | grep -E '(dist|xcframework|\.tgz$)' | tee -a artifacts/runtime-package.log || true
+            find "$RUNNER_TEMP/napi-ios" -maxdepth 7 -type f | grep -E '(dist|xcframework|\.tgz$)' | tee -a artifacts/runtime-package.log || true
             exit 1
           fi
           echo "tgz=$TGZ" >> "$GITHUB_OUTPUT"
           echo "$TGZ" | tee artifacts/runtime-package.log
 
-      - name: Attach locally-built runtime and prepare iOS
+      - name: Attach locally-built runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx ns platform remove ios 2>&1 | tee artifacts/platform-remove.log || true
+          npx ns platform add ios --framework-path="${{ steps.runtime.outputs.tgz }}" 2>&1 | tee artifacts/platform-add.log
+
+      - name: Prepare iOS native project
         shell: bash
         run: |
           set -o pipefail
-          npx ns platform remove ios 2>&1 | tee artifacts/platform-remove.log || true
-          npx ns platform add ios --framework-path="${{ steps.runtime.outputs.tgz }}" 2>&1 | tee artifacts/platform-add.log
           npx ns prepare ios 2>&1 | tee artifacts/prepare-ios.log
+
+      - name: Resolve Xcode container and scheme
+        id: xcode
+        shell: bash
+        run: |
+          set -euo pipefail
+          WS=$(find platforms/ios -type d -name '*.xcworkspace' -print -quit || true)
+          PROJ=$(find platforms/ios -type d -name '*.xcodeproj' -print -quit || true)
+
+          if [ -n "$WS" ]; then
+            KIND=workspace
+            PATH_VALUE="$WS"
+            xcodebuild -list -json -workspace "$WS" > artifacts/xcode-list.json 2> artifacts/xcode-list.stderr.log
+          elif [ -n "$PROJ" ]; then
+            KIND=project
+            PATH_VALUE="$PROJ"
+            xcodebuild -list -json -project "$PROJ" > artifacts/xcode-list.json 2> artifacts/xcode-list.stderr.log
+          else
+            echo "No Xcode workspace/project found after ns prepare." | tee artifacts/xcode-container.log
+            find platforms/ios -maxdepth 5 -print | tee -a artifacts/xcode-container.log || true
+            exit 1
+          fi
+
+          SCHEME=$(python3 - <<'PY'
+          import json
+          with open('artifacts/xcode-list.json', 'r', encoding='utf-8') as f:
+              data = json.load(f)
+          root = data.get('workspace') or data.get('project') or {}
+          schemes = root.get('schemes') or []
+          if not schemes:
+              raise SystemExit('No Xcode schemes found')
+          preferred = next((s for s in schemes if s == 'NapiScriptRunner'), schemes[0])
+          print(preferred)
+          PY
+          )
+
+          {
+            echo "kind=$KIND"
+            echo "path=$PATH_VALUE"
+            echo "scheme=$SCHEME"
+          } >> "$GITHUB_OUTPUT"
+          printf 'kind=%s\npath=%s\nscheme=%s\n' "$KIND" "$PATH_VALUE" "$SCHEME" | tee artifacts/xcode-container.log
 
       - name: Build simulator app
         shell: bash
         run: |
-          set -o pipefail
-          npx ns build ios 2>&1 | tee artifacts/build-simulator.log
+          set -euo pipefail
+          if [ "${{ steps.xcode.outputs.kind }}" = "workspace" ]; then
+            CONTAINER=(-workspace "${{ steps.xcode.outputs.path }}")
+          else
+            CONTAINER=(-project "${{ steps.xcode.outputs.path }}")
+          fi
+
+          xcodebuild "${CONTAINER[@]}" \
+            -scheme "${{ steps.xcode.outputs.scheme }}" \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$PWD/build-simulator" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build 2>&1 | tee artifacts/build-simulator.log
 
       - name: Locate simulator app
         id: simapp
         shell: bash
         run: |
           set -euo pipefail
-          APP=$(find platforms/ios -type d -name '*.app' | grep -E 'iphonesimulator|simulator' | head -1 || true)
+          APP=$(find build-simulator/Build/Products -type d -name '*.app' -path '*iphonesimulator*' -print -quit || true)
           if [ -z "$APP" ]; then
-            APP=$(find platforms/ios -type d -name '*.app' | head -1 || true)
-          fi
-          if [ -z "$APP" ]; then
-            echo "Simulator .app not found" | tee artifacts/simulator-app-location.log
-            find platforms/ios -maxdepth 8 -type d | tee -a artifacts/simulator-app-location.log
+            echo "Simulator .app not found." | tee artifacts/simulator-app-location.log
+            find build-simulator -maxdepth 8 -print | tee -a artifacts/simulator-app-location.log || true
             exit 1
           fi
           echo "path=$APP" >> "$GITHUB_OUTPUT"
@@ -111,83 +180,71 @@ jobs:
         run: |
           set -euo pipefail
           UDID=$(python3 - <<'PY'
-          import json, subprocess
-          data=json.loads(subprocess.check_output(['xcrun','simctl','list','devices','available','-j']))
-          candidates=[]
-          for runtime, devices in data.get('devices',{}).items():
+          import json, re, subprocess
+          data = json.loads(subprocess.check_output(['xcrun', 'simctl', 'list', 'devices', 'available', '-j']))
+          candidates = []
+          for runtime, devices in data.get('devices', {}).items():
+              m = re.search(r'iOS[- ](\d+)(?:[-.](\d+))?(?:[-.](\d+))?', runtime)
+              version = tuple(int(x or 0) for x in (m.groups() if m else ('0','0','0')))
               for d in devices:
-                  if d.get('isAvailable') and d.get('name','').startswith('iPhone'):
-                      candidates.append((runtime,d['name'],d['udid']))
+                  if d.get('isAvailable') and d.get('name', '').startswith('iPhone'):
+                      candidates.append((version, d.get('name', ''), d['udid']))
           if not candidates:
               raise SystemExit('No available iPhone simulator')
-          print(candidates[-1][2])
+          candidates.sort(reverse=True)
+          print(candidates[0][2])
           PY
           )
+
           echo "udid=$UDID" >> "$GITHUB_OUTPUT"
           echo "Using simulator $UDID" | tee artifacts/simulator-run.log
           xcrun simctl boot "$UDID" 2>&1 | tee -a artifacts/simulator-run.log || true
           xcrun simctl bootstatus "$UDID" -b 2>&1 | tee -a artifacts/simulator-run.log
           xcrun simctl install "$UDID" "${{ steps.simapp.outputs.path }}" 2>&1 | tee -a artifacts/simulator-run.log
-          xcrun simctl launch "$UDID" com.davidpovarsky.napiscriptrunner 2>&1 | tee -a artifacts/simulator-run.log
+          xcrun simctl get_app_container "$UDID" com.davidpovarsky.napiscriptrunner app 2>&1 | tee -a artifacts/simulator-run.log
+          xcrun simctl launch --terminate-running-process "$UDID" com.davidpovarsky.napiscriptrunner 2>&1 | tee -a artifacts/simulator-run.log
           sleep 8
           xcrun simctl io "$UDID" screenshot artifacts/simulator.png 2>&1 | tee -a artifacts/simulator-run.log
-          xcrun simctl spawn "$UDID" log show --style compact --last 3m --predicate 'processImagePath CONTAINS "NapiScriptRunner" OR process == "NapiScriptRunner"' > artifacts/simulator-system.log 2>&1 || true
-
-      - name: Prepare release project
-        shell: bash
-        run: |
-          set -o pipefail
-          npx ns prepare ios --release 2>&1 | tee artifacts/prepare-release.log
+          xcrun simctl spawn "$UDID" log show --style compact --last 5m --predicate 'processImagePath CONTAINS "NapiScriptRunner" OR process == "NapiScriptRunner"' > artifacts/simulator-system.log 2>&1 || true
 
       - name: Build unsigned device app
         shell: bash
         run: |
           set -euo pipefail
-          WS=$(find platforms/ios -maxdepth 2 -name '*.xcworkspace' -print -quit)
-          PROJ=$(find platforms/ios -maxdepth 2 -name '*.xcodeproj' -print -quit)
-          if [ -n "$WS" ]; then
-            CONTAINER_ARGS=(-workspace "$WS")
-            LIST_JSON=$(xcodebuild -list -json -workspace "$WS")
-          elif [ -n "$PROJ" ]; then
-            CONTAINER_ARGS=(-project "$PROJ")
-            LIST_JSON=$(xcodebuild -list -json -project "$PROJ")
+          if [ "${{ steps.xcode.outputs.kind }}" = "workspace" ]; then
+            CONTAINER=(-workspace "${{ steps.xcode.outputs.path }}")
           else
-            echo "No Xcode workspace/project found" | tee artifacts/device-build.log
-            exit 1
+            CONTAINER=(-project "${{ steps.xcode.outputs.path }}")
           fi
-          printf '%s\n' "$LIST_JSON" > artifacts/xcode-list.json
-          SCHEME=$(printf '%s' "$LIST_JSON" | python3 -c 'import json,sys; d=json.load(sys.stdin); print((d.get("workspace") or d.get("project") or {}).get("schemes", [""])[0])')
-          if [ -z "$SCHEME" ]; then
-            echo "Could not determine Xcode scheme" | tee -a artifacts/device-build.log
-            exit 1
-          fi
-          echo "Scheme: $SCHEME" | tee artifacts/device-build.log
-          set -o pipefail
-          xcodebuild "${CONTAINER_ARGS[@]}" \
-            -scheme "$SCHEME" \
-            -configuration Release \
+
+          xcodebuild "${CONTAINER[@]}" \
+            -scheme "${{ steps.xcode.outputs.scheme }}" \
+            -configuration Debug \
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
             -derivedDataPath "$PWD/build-device" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
-            build 2>&1 | tee -a artifacts/device-build.log
+            CODE_SIGN_IDENTITY='' \
+            build 2>&1 | tee artifacts/device-build.log
 
       - name: Package unsigned IPA
         shell: bash
         run: |
           set -euo pipefail
-          APP=$(find build-device/Build/Products -type d -name '*.app' -path '*iphoneos*' | head -1 || true)
+          APP=$(find build-device/Build/Products -type d -name '*.app' -path '*iphoneos*' -print -quit || true)
           if [ -z "$APP" ]; then
-            echo "Unsigned device .app not found" | tee artifacts/package-unsigned-ipa.log
+            echo "Unsigned device .app not found." | tee artifacts/package-unsigned-ipa.log
+            find build-device -maxdepth 8 -print | tee -a artifacts/package-unsigned-ipa.log || true
             exit 1
           fi
+
           rm -rf unsigned-ipa
           mkdir -p unsigned-ipa/Payload
           ditto "$APP" "unsigned-ipa/Payload/$(basename "$APP")"
           (cd unsigned-ipa && zip -qry "$GITHUB_WORKSPACE/artifacts/NapiScriptRunner-unsigned.ipa" Payload)
+          unzip -l artifacts/NapiScriptRunner-unsigned.ipa | tee artifacts/ipa-contents.log
           echo "Created artifacts/NapiScriptRunner-unsigned.ipa" | tee artifacts/package-unsigned-ipa.log
-          echo "NOTE: unsigned IPA is for CI inspection only; it is not installable on a normal iPhone/iPad until code-signed." | tee -a artifacts/package-unsigned-ipa.log
 
       - name: Final diagnostics
         if: always()
@@ -196,12 +253,16 @@ jobs:
           {
             echo '=== git ==='
             git rev-parse HEAD || true
-            echo '=== files ==='
+            echo '=== artifacts ==='
             find artifacts -maxdepth 2 -type f -print || true
             echo '=== platform outputs ==='
-            find platforms/ios -maxdepth 7 \( -name '*.app' -o -name '*.xcarchive' -o -name '*.ipa' \) -print 2>/dev/null || true
+            find platforms/ios -maxdepth 7 \( -name '*.app' -o -name '*.xcarchive' -o -name '*.ipa' -o -name '*.xcworkspace' -o -name '*.xcodeproj' \) -print 2>/dev/null || true
+            echo '=== simulator outputs ==='
+            find build-simulator -maxdepth 8 \( -name '*.app' -o -name '*.ipa' \) -print 2>/dev/null || true
             echo '=== device outputs ==='
-            find build-device -maxdepth 8 \( -name '*.app' -o -name '*.xcarchive' -o -name '*.ipa' \) -print 2>/dev/null || true
+            find build-device -maxdepth 8 \( -name '*.app' -o -name '*.ipa' \) -print 2>/dev/null || true
+            echo '=== simulator devices ==='
+            xcrun simctl list devices available || true
           } > artifacts/final-diagnostics.log 2>&1
 
       - name: Upload all logs and build artifacts
