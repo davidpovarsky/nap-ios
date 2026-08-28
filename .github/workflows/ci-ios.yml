@@ -9,10 +9,6 @@ permissions:
   contents: read
   actions: read
 
-concurrency:
-  group: ios-ci-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   build-and-test:
     runs-on: macos-15
