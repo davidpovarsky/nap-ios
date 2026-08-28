@@ -1,0 +1,39 @@
+Page {
+  background-color: #ffffff;
+  color: #111827;
+}
+
+ActionBar {
+  background-color: #f8fafc;
+  color: #111827;
+}
+
+Label {
+  color: #111827;
+  font-size: 16;
+}
+
+Button {
+  color: #0f172a;
+  background-color: #e2e8f0;
+  font-size: 16;
+  padding: 12 16;
+  border-width: 1;
+  border-color: #94a3b8;
+  border-radius: 8;
+}
+
+Button:disabled {
+  color: #64748b;
+  background-color: #f1f5f9;
+}
+
+TextView {
+  color: #111827;
+  background-color: #f8fafc;
+  font-size: 14;
+  padding: 12;
+  border-width: 1;
+  border-color: #cbd5e1;
+  border-radius: 8;
+}

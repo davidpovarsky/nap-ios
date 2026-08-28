@@ -1,3 +1,5 @@
 import { Application } from '@nativescript/core';
+import { initDiagnostics } from './diagnostics';
 
-Application.run({ moduleName: 'main-page' });
+initDiagnostics();
+Application.run({ moduleName: 'app-root' });

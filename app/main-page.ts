@@ -1,4 +1,5 @@
 import { EventData, Observable, Page } from '@nativescript/core';
+import { getDiagnosticFilePath, writeDiagnostic } from './diagnostics';
 
 class RunnerViewModel extends Observable {
   private _fileName = 'No script selected';
@@ -35,13 +36,25 @@ const vm = new RunnerViewModel();
 let pickerDelegate: DocumentPickerDelegate | undefined;
 
 export function onNavigatingTo(args: EventData) {
-  (args.object as Page).bindingContext = vm;
+  const page = args.object as Page;
+  page.bindingContext = vm;
+
+  writeDiagnostic('main-page navigatingTo', {
+    diagnosticsFile: getDiagnosticFilePath(),
+  });
+
+  // Capture both the NativeScript and native UIKit state after layout. This
+  // makes invisible-but-laid-out controls diagnosable from the Files log and CI.
+  setTimeout(() => captureLayoutDiagnostics(page, '250ms'), 250);
+  setTimeout(() => captureLayoutDiagnostics(page, '1500ms'), 1500);
 }
 
 export function onImport() {
+  writeDiagnostic('import requested');
   const controller = topViewController();
   if (!controller) {
     vm.append('Unable to find the active view controller.');
+    writeDiagnostic('import failed', 'Unable to find the active view controller.');
     return;
   }
 
@@ -64,13 +77,17 @@ export function onImport() {
         if (!data) throw new Error('Could not read selected file.');
         const source = NSString.alloc().initWithDataEncoding(data, NSUTF8StringEncoding)?.toString();
         if (source == null) throw new Error('The selected file is not valid UTF-8 text.');
-        vm.setScript(url.lastPathComponent || 'script.js', source);
+        const name = url.lastPathComponent || 'script.js';
+        vm.setScript(name, source);
         vm.append(`Loaded ${url.lastPathComponent || 'script'} (${source.length} chars).`);
+        writeDiagnostic('script loaded', { name, characters: source.length });
       } finally {
         if (didAccess) url.stopAccessingSecurityScopedResource();
       }
     } catch (error) {
-      vm.append(`Import error: ${formatError(error)}`);
+      const formatted = formatError(error);
+      vm.append(`Import error: ${formatted}`);
+      writeDiagnostic('import error', formatted);
     }
   };
 
@@ -83,6 +100,7 @@ export async function onRun() {
   if (!vm.canRun) return;
 
   vm.append(`--- Running ${vm.fileName} ---`);
+  writeDiagnostic('script run started', { fileName: vm.fileName, characters: vm.source.length });
 
   const originalConsole = globalThis.console;
   const bridgedConsole = {
@@ -108,8 +126,11 @@ export async function onRun() {
       vm.append(`Result: ${renderArg(result)}`);
     }
     vm.append('--- Finished ---');
+    writeDiagnostic('script run finished', { fileName: vm.fileName });
   } catch (error) {
-    vm.append(`Runtime error: ${formatError(error)}`);
+    const formatted = formatError(error);
+    vm.append(`Runtime error: ${formatted}`);
+    writeDiagnostic('runtime error', formatted);
   } finally {
     globalThis.console = originalConsole;
   }
@@ -117,6 +138,7 @@ export async function onRun() {
 
 export function onClearConsole() {
   vm.clear();
+  writeDiagnostic('console cleared');
 }
 
 @NativeClass()
@@ -138,7 +160,55 @@ class DocumentPickerDelegate extends NSObject implements UIDocumentPickerDelegat
 
   documentPickerWasCancelled(_controller: UIDocumentPickerViewController) {
     vm.append('Import cancelled.');
+    writeDiagnostic('import cancelled');
   }
+}
+
+function captureLayoutDiagnostics(page: Page, phase: string) {
+  const ids = [
+    'headline',
+    'introLabel',
+    'warningLabel',
+    'importButton',
+    'fileNameLabel',
+    'sourceView',
+    'runButton',
+    'clearButton',
+    'consoleTitle',
+    'outputView',
+  ];
+
+  const views = ids.map((id) => {
+    try {
+      const view = page.getViewById<any>(id);
+      if (!view) return { id, found: false };
+
+      const native = view.ios as any;
+      const frame = native?.frame;
+      return {
+        id,
+        found: true,
+        type: view.constructor?.name ?? 'unknown',
+        visibility: view.visibility,
+        isEnabled: view.isEnabled,
+        opacity: view.opacity,
+        color: view.style?.color ? String(view.style.color) : undefined,
+        backgroundColor: view.style?.backgroundColor ? String(view.style.backgroundColor) : undefined,
+        frame: frame ? {
+          x: frame.origin.x,
+          y: frame.origin.y,
+          width: frame.size.width,
+          height: frame.size.height,
+        } : null,
+        nativeHidden: native?.hidden,
+        nativeAlpha: native?.alpha,
+      };
+    } catch (error) {
+      return { id, diagnosticError: formatError(error) };
+    }
+  });
+
+  writeDiagnostic(`layout ${phase}`, views);
 }
 
 function topViewController(): UIViewController | null {
