@@ -59,12 +59,14 @@ jobs:
           git clone --depth 1 --recurse-submodules https://github.com/NativeScript/napi-ios.git "$RUNNER_TEMP/napi-ios" 2>&1 | tee artifacts/clone-napi-ios.log
           git -C "$RUNNER_TEMP/napi-ios" rev-parse HEAD | tee artifacts/napi-ios-revision.txt
 
-      - name: Build napi-ios runtime
+      - name: Build napi-ios runtime with fixed iOS V8
         working-directory: ${{ runner.temp }}/napi-ios
         shell: bash
         run: |
           set -euo pipefail
           npm install 2>&1 | tee "$GITHUB_WORKSPACE/artifacts/npm-install-runtime.log"
+          bash "$GITHUB_WORKSPACE/scripts/prepare-fixed-v8-ios.sh" "$RUNNER_TEMP/napi-ios" 2>&1 | tee "$GITHUB_WORKSPACE/artifacts/prepare-v8-ios.log"
+          cat Frameworks/V8_FIXED_RELEASE | tee "$GITHUB_WORKSPACE/artifacts/v8-fixed-release.txt"
           npm run build-ios 2>&1 | tee "$GITHUB_WORKSPACE/artifacts/build-runtime.log"
 
       - name: Locate runtime package
@@ -136,9 +138,6 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           printf 'kind=%s\npath=%s\nscheme=%s\n' "$KIND" "$PATH_VALUE" "$SCHEME" | tee artifacts/xcode-container.log
 
-      # The unsigned IPA is the primary deliverable. Build, package and upload it
-      # before any simulator/SimDeck diagnostics so side-test failures can never
-      # prevent an otherwise valid IPA artifact from being published.
       - name: Build unsigned device app
         id: devicebuild
         shell: bash
@@ -189,7 +188,6 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      # Everything below is diagnostic/best-effort. None of it may block the IPA.
       - name: Build simulator app
         id: simbuild
         continue-on-error: true
