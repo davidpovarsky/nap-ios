@@ -2,20 +2,20 @@
   <ActionBar title="Script Runner" />
   <ScrollView>
     <StackLayout padding="20" spacing="14">
-      <Label text="NativeScript / napi-ios Script Runner" fontSize="22" fontWeight="bold" textWrap="true" />
+      <Label text="NativeScript / napi-ios Script Runner" fontSize="22" fontWeight="bold" textWrap="true" accessibilityLabel="NativeScript napi-ios Script Runner" />
       <Label text="Import a local .js/.mjs/.txt file, inspect it, then run it explicitly." textWrap="true" />
       <Label text="Warning: imported code executes with the native capabilities exposed by the runtime. Only run code you trust." textWrap="true" color="#9b1c1c" />
 
-      <Button text="Import Script" tap="onImport" />
-      <Label text="{{ fileName }}" fontWeight="bold" textWrap="true" />
+      <Button text="Import Script" accessibilityLabel="Import Script" accessibilityHint="Choose a JavaScript file to load" tap="onImport" />
+      <Label text="{{ fileName }}" fontWeight="bold" textWrap="true" accessibilityLabel="{{ fileName }}" />
 
-      <TextView text="{{ source }}" editable="false" height="300" hint="No script loaded" />
+      <TextView text="{{ source }}" editable="false" height="300" hint="No script loaded" accessibilityLabel="Script source" />
 
-      <Button text="Run Script" tap="onRun" isEnabled="{{ canRun }}" />
-      <Button text="Clear Console" tap="onClearConsole" />
+      <Button text="Run Script" accessibilityLabel="Run Script" accessibilityHint="Execute the loaded script" tap="onRun" isEnabled="{{ canRun }}" />
+      <Button text="Clear Console" accessibilityLabel="Clear Console" accessibilityHint="Clear script output" tap="onClearConsole" />
 
-      <Label text="Console" fontSize="18" fontWeight="bold" />
-      <TextView text="{{ output }}" editable="false" height="240" />
+      <Label text="Console" fontSize="18" fontWeight="bold" accessibilityLabel="Console" />
+      <TextView text="{{ output }}" editable="false" height="240" accessibilityLabel="Script console output" />
     </StackLayout>
   </ScrollView>
 </Page>
