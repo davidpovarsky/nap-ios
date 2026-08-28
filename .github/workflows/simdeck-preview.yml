@@ -130,7 +130,7 @@ jobs:
           xcrun simctl boot "$UDID" || true
           xcrun simctl bootstatus "$UDID" -b
 
-      - name: Start SimDeck browser service and public tunnel
+      - name: Start SimDeck service and public tunnel
         id: stream
         shell: bash
         run: |
@@ -185,16 +185,29 @@ jobs:
             exit 1
           fi
 
-          PUBLIC_URL="${TUNNEL_URL}?simdeckToken=${TOKEN}&device=${SIMULATOR_UDID}"
-          echo "public_url=$PUBLIC_URL" >> "$GITHUB_OUTPUT"
-          echo "$PUBLIC_URL" > preview-artifacts/public-url.txt
+          TUNNEL_HOST="${TUNNEL_URL#https://}"
+          BROWSER_URL="${TUNNEL_URL}?simdeckToken=${TOKEN}&device=${SIMULATOR_UDID}"
+          STUDIO_URL="https://app.simdeck.sh/open?host=${TUNNEL_HOST}&scheme=https&device=${SIMULATOR_UDID}&simdeckToken=${TOKEN}&hostName=GitHub%20Actions&serverKind=standalone"
+          CUSTOM_SCHEME_URL="simdeck://open?host=${TUNNEL_HOST}&scheme=https&device=${SIMULATOR_UDID}&simdeckToken=${TOKEN}&hostName=GitHub%20Actions&serverKind=standalone"
+
+          echo "browser_url=$BROWSER_URL" >> "$GITHUB_OUTPUT"
+          echo "studio_url=$STUDIO_URL" >> "$GITHUB_OUTPUT"
+          echo "custom_scheme_url=$CUSTOM_SCHEME_URL" >> "$GITHUB_OUTPUT"
+
+          printf '%s\n' "$BROWSER_URL" > preview-artifacts/browser-url.txt
+          printf '%s\n' "$STUDIO_URL" > preview-artifacts/simdeck-studio-url.txt
+          printf '%s\n' "$CUSTOM_SCHEME_URL" > preview-artifacts/simdeck-custom-scheme-url.txt
 
           {
             echo "## Live SimDeck Preview"
             echo
-            echo "Open this on your iPad while this workflow is running:"
+            echo "On your iPad, use the first link if SimDeck Studio is installed:"
             echo
-            echo "### [Open the live iPhone Simulator](${PUBLIC_URL})"
+            echo "### [Open directly in SimDeck Studio](${STUDIO_URL})"
+            echo
+            echo "Fallback:"
+            echo
+            echo "### [Open in Safari](${BROWSER_URL})"
             echo
             echo "Session length: ${{ inputs.keepalive_seconds }} seconds."
           } >> "$GITHUB_STEP_SUMMARY"
