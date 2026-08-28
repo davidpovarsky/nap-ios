@@ -2,130 +2,54 @@
 set -euo pipefail
 
 RUNTIME_ROOT="${1:?usage: prepare-fixed-v8-ios.sh <napi-ios-runtime-root>}"
-V8_TAG="${V8_TAG:-v8-14.9.207.39-6}"
-V8_RELEASE="${V8_TAG#v8-}"
-# NativeScript release tags carry a build revision suffix (for example -6),
-# but the archive filenames contain only the upstream V8 version.
-V8_VERSION="${V8_RELEASE%-*}"
-RELEASE_BASE="https://github.com/NativeScript/v8-buildscripts/releases/download/${V8_TAG}"
-WORK_ROOT="${RUNNER_TEMP:-/tmp}/napi-ios-v8-${V8_RELEASE}"
-XCROOT="${RUNTIME_ROOT}/Frameworks/libv8_monolith.xcframework"
-JSR="${RUNTIME_ROOT}/NativeScript/napi/v8/jsr.cpp"
-CHECKSUMS="$WORK_ROOT/SHA256SUMS"
+PACKAGE_JSON="$RUNTIME_ROOT/package.json"
+CMAKE_FILE="$RUNTIME_ROOT/NativeScript/CMakeLists.txt"
+MARKER_DIR="$RUNTIME_ROOT/Frameworks"
 
-rm -rf "$WORK_ROOT" "$XCROOT"
-mkdir -p "$WORK_ROOT" "$XCROOT"
+# The current napi-ios V8 bridge is pinned to the older V8 14.3 API. Replacing
+# only its binary/headers with NativeScript's fixed V8 14.9 build is not ABI/API
+# compatible: 14.9 adds typed external/embedder pointers and many other API
+# changes. Rather than carrying a partial V8 migration in this app, build the
+# runtime with napi-ios' first-class JavaScriptCore engine on Apple platforms.
+# JSC uses the same NativeScript direct FFI/native interop backend and avoids
+# V8's iOS virtual-address-space/JIT constraints entirely.
 
-curl -fL --retry 4 --retry-delay 2 --retry-all-errors \
-  "${RELEASE_BASE}/SHA256SUMS" \
-  -o "$CHECKSUMS"
-test -s "$CHECKSUMS"
+test -f "$PACKAGE_JSON"
+test -f "$CMAKE_FILE"
+test -f "$RUNTIME_ROOT/NativeScript/napi/jsc/jsr.cpp"
+test -f "$RUNTIME_ROOT/NativeScript/ffi/jsc/NativeApiJSC.mm"
 
-prepare_slice() {
-  local variant="$1"
-  local slice="$2"
-  local asset="v8-${V8_VERSION}-ios-${variant}.tar.gz"
-  local archive="$WORK_ROOT/$asset"
-  local extracted="$WORK_ROOT/${variant}"
-  local source_dir="$extracted/ios-${variant}"
-  local framework="$XCROOT/${slice}/libv8_monolith.framework"
-  local lib
-  local libs=()
+grep -F -- '--jsc' "$RUNTIME_ROOT/scripts/build_nativescript.sh" >/dev/null
+grep -F 'TARGET_ENGINE_JSC' "$CMAKE_FILE" >/dev/null
+grep -F 'FFI_JSC_DIRECT_SOURCE_FILES' "$CMAKE_FILE" >/dev/null
 
-  mkdir -p "$extracted" "$framework/Headers"
-
-  curl -fL --retry 4 --retry-delay 2 --retry-all-errors \
-    "${RELEASE_BASE}/${asset}" \
-    -o "$archive"
-
-  # Verify we received the exact release artifact before linking it into the
-  # runtime. GitHub's release publishes SHA256SUMS alongside every archive.
-  (
-    cd "$WORK_ROOT"
-    grep -F "  ${asset}" SHA256SUMS | shasum -a 256 -c -
-  )
-
-  tar -xzf "$archive" -C "$extracted"
-
-  test -d "$source_dir/lib"
-  test -d "$source_dir/include"
-  test -f "$source_dir/include/v8.h"
-
-  # The official package contains one deliberately empty archive for a
-  # header-only target. Skip memberless archives when flattening the V8 modules
-  # into the monolithic static library expected by NativeScript/runtimes.
-  while IFS= read -r lib; do
-    if [ -n "$(xcrun ar -t "$lib" 2>/dev/null || true)" ]; then
-      libs+=("$lib")
-    fi
-  done < <(find "$source_dir/lib" -type f -name '*.a' -print | LC_ALL=C sort)
-
-  if [ "${#libs[@]}" -eq 0 ]; then
-    echo "No non-empty V8 static libraries found in $source_dir/lib" >&2
-    exit 1
-  fi
-
-  # NativeScript/runtimes currently consumes a monolithic imported static
-  # library. Repackage NativeScript's official fixed per-module V8 archives
-  # into the exact layout its CMake file already expects.
-  xcrun libtool -static -o "$framework/libv8_monolith" "${libs[@]}"
-  xcrun ranlib "$framework/libv8_monolith"
-  cp -R "$source_dir/include/." "$framework/Headers/"
-
-  test -s "$framework/libv8_monolith"
-  test -f "$framework/Headers/v8.h"
-}
-
-prepare_slice arm64-device ios-arm64
-prepare_slice arm64-simulator ios-arm64-simulator
-
-python3 - "$JSR" <<'PY'
+python3 - "$PACKAGE_JSON" <<'PY'
+import json
 from pathlib import Path
 import sys
 
 path = Path(sys.argv[1])
-text = path.read_text()
-
-old_assert = '''#if defined(__APPLE__) && TARGET_OS_IPHONE
-static_assert(v8::internal::PointerCompressionIsEnabled(),
-              "iOS V8 embedder must be built with pointer compression enabled");
-static_assert(v8::internal::SmiValuesAre31Bits(),
-              "iOS V8 embedder must use 31-bit smis on 64-bit arch");
-#endif
-'''
-if old_assert not in text:
-    raise SystemExit('Expected iOS pointer-compression static_assert block not found in jsr.cpp')
-text = text.replace(old_assert, '''#if defined(__APPLE__) && TARGET_OS_IPHONE
-// NativeScript's supported iOS V8 build deliberately disables pointer
-// compression and the cppgc caged heap. iOS cannot reliably reserve the
-// multi-gigabyte aligned cages those features require on constrained devices.
-#endif
-''', 1)
-
-old_flags = '    v8::V8::SetFlagsFromString("--expose_gc");'
-new_flags = '''#if defined(__APPLE__) && TARGET_OS_IPHONE
-    // iOS does not permit V8 JIT code generation. The linked V8 is also built
-    // with v8_enable_lite_mode=true, and this runtime flag keeps the policy
-    // explicit at startup.
-    v8::V8::SetFlagsFromString("--expose_gc --jitless");
-#else
-    v8::V8::SetFlagsFromString("--expose_gc");
-#endif'''
-if old_flags not in text:
-    raise SystemExit('Expected V8 flag initialization not found in jsr.cpp')
-text = text.replace(old_flags, new_flags, 1)
-
-path.write_text(text)
+data = json.loads(path.read_text())
+scripts = data.setdefault('scripts', {})
+# Keep the produced npm package as @nativescript/ios so the NativeScript CLI's
+# existing --framework-path flow remains unchanged; only swap the embedded JS
+# engine used to build NativeScript.framework.
+scripts['build-ios'] = './scripts/build_all_ios.sh --jsc'
+path.write_text(json.dumps(data, indent=2) + '\n')
 PY
 
-# Presence of this directory prevents the runtime build from downloading the
-# older DjDeveloperr V8 package. Record exactly what CI linked for diagnostics.
-printf '%s\n' "$V8_TAG" > "$RUNTIME_ROOT/Frameworks/V8_FIXED_RELEASE"
+mkdir -p "$MARKER_DIR"
+rm -rf "$MARKER_DIR/libv8_monolith.xcframework"
+printf '%s\n' 'jsc' > "$MARKER_DIR/RUNTIME_ENGINE"
+# ci-ios.yml from the earlier V8 experiment still cats this marker. Keep it as
+# a compatibility marker until the workflow is simplified in a later cleanup.
+printf '%s\n' 'V8 disabled; using JavaScriptCore' > "$MARKER_DIR/V8_FIXED_RELEASE"
 
 {
-  echo "V8 release tag: $V8_TAG"
-  echo "V8 asset version: $V8_VERSION"
-  echo "Device archive: $(du -h "$XCROOT/ios-arm64/libv8_monolith.framework/libv8_monolith" | awk '{print $1}')"
-  echo "Simulator archive: $(du -h "$XCROOT/ios-arm64-simulator/libv8_monolith.framework/libv8_monolith" | awk '{print $1}')"
-  echo "Patched runtime: $JSR"
+  echo 'Runtime engine: JavaScriptCore (JSC)'
+  echo 'NativeScript FFI backend: direct (auto for TARGET_ENGINE_JSC)'
+  echo 'V8 replacement/migration: disabled'
+  echo 'Reason: napi-ios V8 bridge is API-incompatible with V8 14.9 headers'
+  echo 'Patched build command:'
+  node -e "console.log(require('$PACKAGE_JSON').scripts['build-ios'])"
 }
