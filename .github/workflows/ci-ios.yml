@@ -136,7 +136,63 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           printf 'kind=%s\npath=%s\nscheme=%s\n' "$KIND" "$PATH_VALUE" "$SCHEME" | tee artifacts/xcode-container.log
 
+      # The unsigned IPA is the primary deliverable. Build, package and upload it
+      # before any simulator/SimDeck diagnostics so side-test failures can never
+      # prevent an otherwise valid IPA artifact from being published.
+      - name: Build unsigned device app
+        id: devicebuild
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.xcode.outputs.kind }}" = "workspace" ]; then
+            CONTAINER=(-workspace "${{ steps.xcode.outputs.path }}")
+          else
+            CONTAINER=(-project "${{ steps.xcode.outputs.path }}")
+          fi
+
+          xcodebuild "${CONTAINER[@]}" \
+            -scheme "${{ steps.xcode.outputs.scheme }}" \
+            -configuration Debug \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$PWD/build-device" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY='' \
+            build 2>&1 | tee artifacts/device-build.log
+
+      - name: Package unsigned IPA
+        id: packageipa
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP=$(find build-device/Build/Products -type d -name '*.app' -path '*iphoneos*' -print -quit || true)
+          if [ -z "$APP" ]; then
+            echo "Unsigned device .app not found." | tee artifacts/package-unsigned-ipa.log
+            find build-device -maxdepth 8 -print | tee -a artifacts/package-unsigned-ipa.log || true
+            exit 1
+          fi
+
+          rm -rf unsigned-ipa
+          mkdir -p unsigned-ipa/Payload
+          ditto "$APP" "unsigned-ipa/Payload/$(basename "$APP")"
+          (cd unsigned-ipa && zip -qry "$GITHUB_WORKSPACE/artifacts/NapiScriptRunner-unsigned.ipa" Payload)
+          unzip -l artifacts/NapiScriptRunner-unsigned.ipa | tee artifacts/ipa-contents.log
+          test -s artifacts/NapiScriptRunner-unsigned.ipa
+          echo "Created artifacts/NapiScriptRunner-unsigned.ipa" | tee artifacts/package-unsigned-ipa.log
+
+      - name: Upload unsigned IPA immediately
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-unsigned-ipa-${{ github.sha }}
+          path: artifacts/NapiScriptRunner-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14
+
+      # Everything below is diagnostic/best-effort. None of it may block the IPA.
       - name: Build simulator app
+        id: simbuild
+        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
@@ -157,7 +213,9 @@ jobs:
             build 2>&1 | tee artifacts/build-simulator.log
 
       - name: Locate simulator app
+        if: ${{ steps.simbuild.outcome == 'success' }}
         id: simapp
+        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
@@ -172,15 +230,19 @@ jobs:
           ditto -c -k --sequesterRsrc --keepParent "$APP" artifacts/NapiScriptRunner-simulator.zip
 
       - name: Upload simulator app for Live Preview
+        if: ${{ steps.simapp.outcome == 'success' }}
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: ios-simulator-app-${{ github.sha }}
           path: artifacts/NapiScriptRunner-simulator.zip
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 14
 
       - name: Boot simulator, install and launch app
+        if: ${{ steps.simapp.outcome == 'success' }}
         id: simrun
+        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
@@ -213,6 +275,8 @@ jobs:
           xcrun simctl spawn "$UDID" log show --style compact --last 5m --predicate 'processImagePath CONTAINS "NapiScriptRunner" OR process == "NapiScriptRunner"' > artifacts/simulator-system.log 2>&1 || true
 
       - name: SimDeck UI verification and diagnostics
+        if: ${{ steps.simrun.outcome == 'success' && steps.simrun.outputs.udid != '' }}
+        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
@@ -225,45 +289,6 @@ jobs:
           simdeck logs --seconds 60 --limit 300 > artifacts/simdeck-logs.json 2> artifacts/simdeck-logs.stderr.log || true
           grep -F "Import Script" artifacts/simdeck-ui.txt >/dev/null
           grep -F "Run Script" artifacts/simdeck-ui.txt >/dev/null
-
-      - name: Build unsigned device app
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ "${{ steps.xcode.outputs.kind }}" = "workspace" ]; then
-            CONTAINER=(-workspace "${{ steps.xcode.outputs.path }}")
-          else
-            CONTAINER=(-project "${{ steps.xcode.outputs.path }}")
-          fi
-
-          xcodebuild "${CONTAINER[@]}" \
-            -scheme "${{ steps.xcode.outputs.scheme }}" \
-            -configuration Debug \
-            -sdk iphoneos \
-            -destination 'generic/platform=iOS' \
-            -derivedDataPath "$PWD/build-device" \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY='' \
-            build 2>&1 | tee artifacts/device-build.log
-
-      - name: Package unsigned IPA
-        shell: bash
-        run: |
-          set -euo pipefail
-          APP=$(find build-device/Build/Products -type d -name '*.app' -path '*iphoneos*' -print -quit || true)
-          if [ -z "$APP" ]; then
-            echo "Unsigned device .app not found." | tee artifacts/package-unsigned-ipa.log
-            find build-device -maxdepth 8 -print | tee -a artifacts/package-unsigned-ipa.log || true
-            exit 1
-          fi
-
-          rm -rf unsigned-ipa
-          mkdir -p unsigned-ipa/Payload
-          ditto "$APP" "unsigned-ipa/Payload/$(basename "$APP")"
-          (cd unsigned-ipa && zip -qry "$GITHUB_WORKSPACE/artifacts/NapiScriptRunner-unsigned.ipa" Payload)
-          unzip -l artifacts/NapiScriptRunner-unsigned.ipa | tee artifacts/ipa-contents.log
-          echo "Created artifacts/NapiScriptRunner-unsigned.ipa" | tee artifacts/package-unsigned-ipa.log
 
       - name: Final diagnostics
         if: always()
