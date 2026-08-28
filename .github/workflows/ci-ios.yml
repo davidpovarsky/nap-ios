@@ -40,13 +40,12 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
 
       - name: Install app dependencies
         shell: bash
         run: |
           set -euo pipefail
-          npm ci 2>&1 | tee artifacts/npm-install-app.log
+          npm install 2>&1 | tee artifacts/npm-install-app.log
           npx ns --version 2>&1 | tee artifacts/nativescript-version.log
 
       - name: TypeScript preflight
@@ -67,7 +66,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          npm ci 2>&1 | tee "$GITHUB_WORKSPACE/artifacts/npm-install-runtime.log"
+          npm install 2>&1 | tee "$GITHUB_WORKSPACE/artifacts/npm-install-runtime.log"
           npm run build-ios 2>&1 | tee "$GITHUB_WORKSPACE/artifacts/build-runtime.log"
 
       - name: Locate runtime package
