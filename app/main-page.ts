@@ -6,7 +6,7 @@ let source = '';
 let output = '';
 
 let pickerDelegate: DocumentPickerDelegate | undefined;
-let actionTarget: RunnerActionTarget | undefined;
+let actionTarget: NSObject | undefined;
 
 let rootView: UIView | undefined;
 let fileNameLabel: UILabel | undefined;
