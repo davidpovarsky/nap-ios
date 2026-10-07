@@ -22,6 +22,14 @@ jobs:
     timeout-minutes: 35
 
     steps:
+      - name: Live Activity · refresh
+        uses: davidpovarsky/github-automation/live-refresh@main
+        continue-on-error: true
+        with:
+          event: refresh
+          device_id: ${{ secrets.NOTIFY_DEVICE_ID }}
+          token: ${{ secrets.NOTIFY_DEVICE_TOKEN }}
+          github_token: ${{ github.token }}
       - name: Select Xcode
         shell: bash
         run: |
@@ -30,11 +38,27 @@ jobs:
           xcodebuild -version
           uname -m
 
+      - name: Live Activity · refresh
+        uses: davidpovarsky/github-automation/live-refresh@main
+        continue-on-error: true
+        with:
+          event: refresh
+          device_id: ${{ secrets.NOTIFY_DEVICE_ID }}
+          token: ${{ secrets.NOTIFY_DEVICE_TOKEN }}
+          github_token: ${{ github.token }}
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 22
 
+      - name: Live Activity · refresh
+        uses: davidpovarsky/github-automation/live-refresh@main
+        continue-on-error: true
+        with:
+          event: refresh
+          device_id: ${{ secrets.NOTIFY_DEVICE_ID }}
+          token: ${{ secrets.NOTIFY_DEVICE_TOKEN }}
+          github_token: ${{ github.token }}
       - name: Install SimDeck and cloudflared
         shell: bash
         run: |
@@ -54,6 +78,14 @@ jobs:
           chmod +x "$RUNNER_TEMP/cloudflared/cloudflared"
           echo "$RUNNER_TEMP/cloudflared" >> "$GITHUB_PATH"
 
+      - name: Live Activity · refresh
+        uses: davidpovarsky/github-automation/live-refresh@main
+        continue-on-error: true
+        with:
+          event: refresh
+          device_id: ${{ secrets.NOTIFY_DEVICE_ID }}
+          token: ${{ secrets.NOTIFY_DEVICE_TOKEN }}
+          github_token: ${{ github.token }}
       - name: Download latest successful simulator build
         env:
           GH_TOKEN: ${{ github.token }}
@@ -104,6 +136,14 @@ jobs:
 
           echo "APP_PATH=$APP" >> "$GITHUB_ENV"
 
+      - name: Live Activity · refresh
+        uses: davidpovarsky/github-automation/live-refresh@main
+        continue-on-error: true
+        with:
+          event: refresh
+          device_id: ${{ secrets.NOTIFY_DEVICE_ID }}
+          token: ${{ secrets.NOTIFY_DEVICE_TOKEN }}
+          github_token: ${{ github.token }}
       - name: Select and boot newest iPhone simulator
         shell: bash
         run: |
@@ -130,6 +170,14 @@ jobs:
           xcrun simctl boot "$UDID" || true
           xcrun simctl bootstatus "$UDID" -b
 
+      - name: Live Activity · refresh
+        uses: davidpovarsky/github-automation/live-refresh@main
+        continue-on-error: true
+        with:
+          event: refresh
+          device_id: ${{ secrets.NOTIFY_DEVICE_ID }}
+          token: ${{ secrets.NOTIFY_DEVICE_TOKEN }}
+          github_token: ${{ github.token }}
       - name: Install and launch app directly with simctl
         shell: bash
         run: |
@@ -161,6 +209,14 @@ jobs:
             --predicate 'processImagePath CONTAINS "NapiScriptRunner" OR process == "NapiScriptRunner"' \
             > preview-artifacts/pre-stream-system.log 2>&1 || true
 
+      - name: Live Activity · refresh
+        uses: davidpovarsky/github-automation/live-refresh@main
+        continue-on-error: true
+        with:
+          event: refresh
+          device_id: ${{ secrets.NOTIFY_DEVICE_ID }}
+          token: ${{ secrets.NOTIFY_DEVICE_TOKEN }}
+          github_token: ${{ github.token }}
       - name: Start SimDeck service and public tunnel
         id: stream
         shell: bash
@@ -257,6 +313,14 @@ jobs:
             echo "Session length: ${{ inputs.keepalive_seconds }} seconds."
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Live Activity · refresh
+        uses: davidpovarsky/github-automation/live-refresh@main
+        continue-on-error: true
+        with:
+          event: refresh
+          device_id: ${{ secrets.NOTIFY_DEVICE_ID }}
+          token: ${{ secrets.NOTIFY_DEVICE_TOKEN }}
+          github_token: ${{ github.token }}
       - name: Verify running app through SimDeck
         shell: bash
         run: |
@@ -267,6 +331,14 @@ jobs:
           grep -F "Import Script" preview-artifacts/ui-tree.txt >/dev/null
           grep -F "Run Script" preview-artifacts/ui-tree.txt >/dev/null
 
+      - name: Live Activity · refresh
+        uses: davidpovarsky/github-automation/live-refresh@main
+        continue-on-error: true
+        with:
+          event: refresh
+          device_id: ${{ secrets.NOTIFY_DEVICE_ID }}
+          token: ${{ secrets.NOTIFY_DEVICE_TOKEN }}
+          github_token: ${{ github.token }}
       - name: Keep live iPad session open
         shell: bash
         run: |
@@ -286,6 +358,15 @@ jobs:
             sleep 5
           done
 
+      - name: Live Activity · refresh
+        if: always()
+        uses: davidpovarsky/github-automation/live-refresh@main
+        continue-on-error: true
+        with:
+          event: refresh
+          device_id: ${{ secrets.NOTIFY_DEVICE_ID }}
+          token: ${{ secrets.NOTIFY_DEVICE_TOKEN }}
+          github_token: ${{ github.token }}
       - name: Collect final preview logs
         if: always()
         shell: bash
@@ -296,6 +377,15 @@ jobs:
             > preview-artifacts/simulator-system.log 2>&1 || true
           xcrun simctl io "${SIMULATOR_UDID:-booted}" screenshot preview-artifacts/final-screenshot.png >/dev/null 2>&1 || true
 
+      - name: Live Activity · refresh
+        if: always()
+        uses: davidpovarsky/github-automation/live-refresh@main
+        continue-on-error: true
+        with:
+          event: refresh
+          device_id: ${{ secrets.NOTIFY_DEVICE_ID }}
+          token: ${{ secrets.NOTIFY_DEVICE_TOKEN }}
+          github_token: ${{ github.token }}
       - name: Upload preview diagnostics
         if: always()
         uses: actions/upload-artifact@v4
