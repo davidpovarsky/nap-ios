@@ -15,12 +15,36 @@ jobs:
     timeout-minutes: 120
 
     steps:
+      - name: Live Activity · refresh
+        uses: davidpovarsky/github-automation/live-refresh@main
+        continue-on-error: true
+        with:
+          event: refresh
+          device_id: ${{ secrets.NOTIFY_DEVICE_ID }}
+          token: ${{ secrets.NOTIFY_DEVICE_TOKEN }}
+          github_token: ${{ github.token }}
       - name: Checkout app
         uses: actions/checkout@v4
 
+      - name: Live Activity · refresh
+        uses: davidpovarsky/github-automation/live-refresh@main
+        continue-on-error: true
+        with:
+          event: refresh
+          device_id: ${{ secrets.NOTIFY_DEVICE_ID }}
+          token: ${{ secrets.NOTIFY_DEVICE_TOKEN }}
+          github_token: ${{ github.token }}
       - name: Create artifact directory
         run: mkdir -p artifacts
 
+      - name: Live Activity · refresh
+        uses: davidpovarsky/github-automation/live-refresh@main
+        continue-on-error: true
+        with:
+          event: refresh
+          device_id: ${{ secrets.NOTIFY_DEVICE_ID }}
+          token: ${{ secrets.NOTIFY_DEVICE_TOKEN }}
+          github_token: ${{ github.token }}
       - name: Xcode diagnostics
         shell: bash
         run: |
@@ -34,11 +58,27 @@ jobs:
             xcrun simctl list devices available
           } 2>&1 | tee artifacts/xcode-diagnostics.log
 
+      - name: Live Activity · refresh
+        uses: davidpovarsky/github-automation/live-refresh@main
+        continue-on-error: true
+        with:
+          event: refresh
+          device_id: ${{ secrets.NOTIFY_DEVICE_ID }}
+          token: ${{ secrets.NOTIFY_DEVICE_TOKEN }}
+          github_token: ${{ github.token }}
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 22
 
+      - name: Live Activity · refresh
+        uses: davidpovarsky/github-automation/live-refresh@main
+        continue-on-error: true
+        with:
+          event: refresh
+          device_id: ${{ secrets.NOTIFY_DEVICE_ID }}
+          token: ${{ secrets.NOTIFY_DEVICE_TOKEN }}
+          github_token: ${{ github.token }}
       - name: Install app dependencies
         shell: bash
         run: |
@@ -46,12 +86,28 @@ jobs:
           npm install 2>&1 | tee artifacts/npm-install-app.log
           npx ns --version 2>&1 | tee artifacts/nativescript-version.log
 
+      - name: Live Activity · refresh
+        uses: davidpovarsky/github-automation/live-refresh@main
+        continue-on-error: true
+        with:
+          event: refresh
+          device_id: ${{ secrets.NOTIFY_DEVICE_ID }}
+          token: ${{ secrets.NOTIFY_DEVICE_TOKEN }}
+          github_token: ${{ github.token }}
       - name: TypeScript preflight
         shell: bash
         run: |
           set -o pipefail
           npx tsc --noEmit 2>&1 | tee artifacts/typescript-preflight.log
 
+      - name: Live Activity · refresh
+        uses: davidpovarsky/github-automation/live-refresh@main
+        continue-on-error: true
+        with:
+          event: refresh
+          device_id: ${{ secrets.NOTIFY_DEVICE_ID }}
+          token: ${{ secrets.NOTIFY_DEVICE_TOKEN }}
+          github_token: ${{ github.token }}
       - name: Clone current NativeScript napi-ios runtime
         shell: bash
         run: |
@@ -59,6 +115,14 @@ jobs:
           git clone --depth 1 --recurse-submodules https://github.com/NativeScript/napi-ios.git "$RUNNER_TEMP/napi-ios" 2>&1 | tee artifacts/clone-napi-ios.log
           git -C "$RUNNER_TEMP/napi-ios" rev-parse HEAD | tee artifacts/napi-ios-revision.txt
 
+      - name: Live Activity · refresh
+        uses: davidpovarsky/github-automation/live-refresh@main
+        continue-on-error: true
+        with:
+          event: refresh
+          device_id: ${{ secrets.NOTIFY_DEVICE_ID }}
+          token: ${{ secrets.NOTIFY_DEVICE_TOKEN }}
+          github_token: ${{ github.token }}
       - name: Build napi-ios runtime with fixed iOS V8
         working-directory: ${{ runner.temp }}/napi-ios
         shell: bash
@@ -69,6 +133,14 @@ jobs:
           cat Frameworks/V8_FIXED_RELEASE | tee "$GITHUB_WORKSPACE/artifacts/v8-fixed-release.txt"
           npm run build-ios 2>&1 | tee "$GITHUB_WORKSPACE/artifacts/build-runtime.log"
 
+      - name: Live Activity · refresh
+        uses: davidpovarsky/github-automation/live-refresh@main
+        continue-on-error: true
+        with:
+          event: refresh
+          device_id: ${{ secrets.NOTIFY_DEVICE_ID }}
+          token: ${{ secrets.NOTIFY_DEVICE_TOKEN }}
+          github_token: ${{ github.token }}
       - name: Locate runtime package
         id: runtime
         shell: bash
@@ -83,6 +155,14 @@ jobs:
           echo "tgz=$TGZ" >> "$GITHUB_OUTPUT"
           echo "$TGZ" | tee artifacts/runtime-package.log
 
+      - name: Live Activity · refresh
+        uses: davidpovarsky/github-automation/live-refresh@main
+        continue-on-error: true
+        with:
+          event: refresh
+          device_id: ${{ secrets.NOTIFY_DEVICE_ID }}
+          token: ${{ secrets.NOTIFY_DEVICE_TOKEN }}
+          github_token: ${{ github.token }}
       - name: Attach locally-built runtime
         shell: bash
         run: |
@@ -90,12 +170,28 @@ jobs:
           npx ns platform remove ios 2>&1 | tee artifacts/platform-remove.log || true
           npx ns platform add ios --framework-path="${{ steps.runtime.outputs.tgz }}" 2>&1 | tee artifacts/platform-add.log
 
+      - name: Live Activity · refresh
+        uses: davidpovarsky/github-automation/live-refresh@main
+        continue-on-error: true
+        with:
+          event: refresh
+          device_id: ${{ secrets.NOTIFY_DEVICE_ID }}
+          token: ${{ secrets.NOTIFY_DEVICE_TOKEN }}
+          github_token: ${{ github.token }}
       - name: Prepare iOS native project
         shell: bash
         run: |
           set -o pipefail
           npx ns prepare ios 2>&1 | tee artifacts/prepare-ios.log
 
+      - name: Live Activity · refresh
+        uses: davidpovarsky/github-automation/live-refresh@main
+        continue-on-error: true
+        with:
+          event: refresh
+          device_id: ${{ secrets.NOTIFY_DEVICE_ID }}
+          token: ${{ secrets.NOTIFY_DEVICE_TOKEN }}
+          github_token: ${{ github.token }}
       - name: Resolve Xcode container and scheme
         id: xcode
         shell: bash
@@ -138,6 +234,14 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           printf 'kind=%s\npath=%s\nscheme=%s\n' "$KIND" "$PATH_VALUE" "$SCHEME" | tee artifacts/xcode-container.log
 
+      - name: Live Activity · refresh
+        uses: davidpovarsky/github-automation/live-refresh@main
+        continue-on-error: true
+        with:
+          event: refresh
+          device_id: ${{ secrets.NOTIFY_DEVICE_ID }}
+          token: ${{ secrets.NOTIFY_DEVICE_TOKEN }}
+          github_token: ${{ github.token }}
       - name: Build unsigned device app
         id: devicebuild
         shell: bash
@@ -160,6 +264,14 @@ jobs:
             CODE_SIGN_IDENTITY='' \
             build 2>&1 | tee artifacts/device-build.log
 
+      - name: Live Activity · refresh
+        uses: davidpovarsky/github-automation/live-refresh@main
+        continue-on-error: true
+        with:
+          event: refresh
+          device_id: ${{ secrets.NOTIFY_DEVICE_ID }}
+          token: ${{ secrets.NOTIFY_DEVICE_TOKEN }}
+          github_token: ${{ github.token }}
       - name: Package unsigned IPA
         id: packageipa
         shell: bash
@@ -180,6 +292,14 @@ jobs:
           test -s artifacts/NapiScriptRunner-unsigned.ipa
           echo "Created artifacts/NapiScriptRunner-unsigned.ipa" | tee artifacts/package-unsigned-ipa.log
 
+      - name: Live Activity · refresh
+        uses: davidpovarsky/github-automation/live-refresh@main
+        continue-on-error: true
+        with:
+          event: refresh
+          device_id: ${{ secrets.NOTIFY_DEVICE_ID }}
+          token: ${{ secrets.NOTIFY_DEVICE_TOKEN }}
+          github_token: ${{ github.token }}
       - name: Upload unsigned IPA immediately
         uses: actions/upload-artifact@v4
         with:
@@ -188,6 +308,14 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - name: Live Activity · refresh
+        uses: davidpovarsky/github-automation/live-refresh@main
+        continue-on-error: true
+        with:
+          event: refresh
+          device_id: ${{ secrets.NOTIFY_DEVICE_ID }}
+          token: ${{ secrets.NOTIFY_DEVICE_TOKEN }}
+          github_token: ${{ github.token }}
       - name: Build simulator app
         id: simbuild
         continue-on-error: true
@@ -210,6 +338,15 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             build 2>&1 | tee artifacts/build-simulator.log
 
+      - name: Live Activity · refresh
+        if: ${{ steps.simbuild.outcome == 'success' }}
+        uses: davidpovarsky/github-automation/live-refresh@main
+        continue-on-error: true
+        with:
+          event: refresh
+          device_id: ${{ secrets.NOTIFY_DEVICE_ID }}
+          token: ${{ secrets.NOTIFY_DEVICE_TOKEN }}
+          github_token: ${{ github.token }}
       - name: Locate simulator app
         if: ${{ steps.simbuild.outcome == 'success' }}
         id: simapp
@@ -227,6 +364,15 @@ jobs:
           echo "$APP" | tee artifacts/simulator-app-location.log
           ditto -c -k --sequesterRsrc --keepParent "$APP" artifacts/NapiScriptRunner-simulator.zip
 
+      - name: Live Activity · refresh
+        if: ${{ steps.simapp.outcome == 'success' }}
+        uses: davidpovarsky/github-automation/live-refresh@main
+        continue-on-error: true
+        with:
+          event: refresh
+          device_id: ${{ secrets.NOTIFY_DEVICE_ID }}
+          token: ${{ secrets.NOTIFY_DEVICE_TOKEN }}
+          github_token: ${{ github.token }}
       - name: Upload simulator app for Live Preview
         if: ${{ steps.simapp.outcome == 'success' }}
         continue-on-error: true
@@ -237,6 +383,15 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+      - name: Live Activity · refresh
+        if: ${{ steps.simapp.outcome == 'success' }}
+        uses: davidpovarsky/github-automation/live-refresh@main
+        continue-on-error: true
+        with:
+          event: refresh
+          device_id: ${{ secrets.NOTIFY_DEVICE_ID }}
+          token: ${{ secrets.NOTIFY_DEVICE_TOKEN }}
+          github_token: ${{ github.token }}
       - name: Boot simulator, install and launch app
         if: ${{ steps.simapp.outcome == 'success' }}
         id: simrun
@@ -272,6 +427,15 @@ jobs:
           xcrun simctl io "$UDID" screenshot artifacts/simulator.png 2>&1 | tee -a artifacts/simulator-run.log
           xcrun simctl spawn "$UDID" log show --style compact --last 5m --predicate 'processImagePath CONTAINS "NapiScriptRunner" OR process == "NapiScriptRunner"' > artifacts/simulator-system.log 2>&1 || true
 
+      - name: Live Activity · refresh
+        if: ${{ steps.simrun.outcome == 'success' && steps.simrun.outputs.udid != '' }}
+        uses: davidpovarsky/github-automation/live-refresh@main
+        continue-on-error: true
+        with:
+          event: refresh
+          device_id: ${{ secrets.NOTIFY_DEVICE_ID }}
+          token: ${{ secrets.NOTIFY_DEVICE_TOKEN }}
+          github_token: ${{ github.token }}
       - name: SimDeck UI verification and diagnostics
         if: ${{ steps.simrun.outcome == 'success' && steps.simrun.outputs.udid != '' }}
         continue-on-error: true
@@ -288,6 +452,15 @@ jobs:
           grep -F "Import Script" artifacts/simdeck-ui.txt >/dev/null
           grep -F "Run Script" artifacts/simdeck-ui.txt >/dev/null
 
+      - name: Live Activity · refresh
+        if: always()
+        uses: davidpovarsky/github-automation/live-refresh@main
+        continue-on-error: true
+        with:
+          event: refresh
+          device_id: ${{ secrets.NOTIFY_DEVICE_ID }}
+          token: ${{ secrets.NOTIFY_DEVICE_TOKEN }}
+          github_token: ${{ github.token }}
       - name: Final diagnostics
         if: always()
         shell: bash
@@ -307,6 +480,15 @@ jobs:
             xcrun simctl list devices available || true
           } > artifacts/final-diagnostics.log 2>&1
 
+      - name: Live Activity · refresh
+        if: always()
+        uses: davidpovarsky/github-automation/live-refresh@main
+        continue-on-error: true
+        with:
+          event: refresh
+          device_id: ${{ secrets.NOTIFY_DEVICE_ID }}
+          token: ${{ secrets.NOTIFY_DEVICE_TOKEN }}
+          github_token: ${{ github.token }}
       - name: Upload all logs and build artifacts
         if: always()
         uses: actions/upload-artifact@v4
